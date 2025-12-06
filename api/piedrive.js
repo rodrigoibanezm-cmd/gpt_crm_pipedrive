@@ -1,217 +1,67 @@
-// api/pipedrive.js
+// api/crm-backend.js
 
-const BASE_URL = process.env.PIPEDRIVE_BASE_URL || 'https://api.pipedrive.com/v1';
-const API_TOKEN = process.env.PIPEDRIVE_API_TOKEN;
+import { dispatchAction } from './pipedrive';
 
-async function pipedriveRequest(path, options = {}) {
-  if (!API_TOKEN) {
-    throw new Error('PIPEDRIVE_API_TOKEN no está configurado');
-  }
-
-  const url = new URL(path, BASE_URL);
-  url.searchParams.set('api_token', API_TOKEN);
-
-  const fetchOptions = {
-    method: options.method || 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
-    }
-  };
-
-  if (options.body) {
-    fetchOptions.body = JSON.stringify(options.body);
-  }
-
-  const res = await fetch(url.toString(), fetchOptions);
-  const data = await res.json().catch(() => ({}));
-
-  if (!res.ok || data.success === false) {
-    const msg = data.error || data.message || `Error Pipedrive ${res.status}`;
-    throw new Error(msg);
-  }
-
-  return data;
+function nowISO() {
+  return new Date().toISOString();
 }
 
-// --- Acciones de dominio mínimo ---
-
-async function listDeals(params = {}) {
-  const {
-    status = 'open',
-    limit = 50,
-    start = 0,
-    filter_id
-  } = params;
-
-  const url = new URL('/deals', BASE_URL);
-  url.searchParams.set('status', status);
-  url.searchParams.set('limit', String(limit));
-  url.searchParams.set('start', String(start));
-  if (filter_id) url.searchParams.set('filter_id', String(filter_id));
-  url.searchParams.set('api_token', API_TOKEN);
-
-  const res = await fetch(url.toString());
-  const data = await res.json().catch(() => ({}));
-
-  if (!res.ok || data.success === false) {
-    const msg = data.error || data.message || `Error Pipedrive ${res.status}`;
-    throw new Error(msg);
-  }
-
+function buildOk(intent, datos, red_flags = [], alertas = [], extraMeta = {}) {
   return {
-    items: data.data || [],
-    pagination: data.additional_data?.pagination || null
-  };
-}
-
-async function getDeal(params = {}) {
-  const { id } = params;
-  if (!id) throw new Error('id es obligatorio para getDeal');
-
-  const data = await pipedriveRequest(`/deals/${id}`);
-  return data.data || null;
-}
-
-async function createDeal(params = {}) {
-  const body = params || {};
-  const data = await pipedriveRequest('/deals', {
-    method: 'POST',
-    body
-  });
-  return data.data || null;
-}
-
-async function updateDeal(params = {}) {
-  const { id, ...fields } = params;
-  if (!id) throw new Error('id es obligatorio para updateDeal');
-
-  const data = await pipedriveRequest(`/deals/${id}`, {
-    method: 'PUT',
-    body: fields
-  });
-  return data.data || null;
-}
-
-async function moveDeal(params = {}) {
-  const { id, stage_id, ...fields } = params;
-  if (!id || !stage_id) {
-    throw new Error('id y stage_id son obligatorios para moveDeal');
-  }
-
-  const data = await pipedriveRequest(`/deals/${id}`, {
-    method: 'PUT',
-    body: { stage_id, ...fields }
-  });
-  return data.data || null;
-}
-
-async function addNote(params = {}) {
-  const { deal_id, content, ...rest } = params;
-  if (!deal_id || !content) {
-    throw new Error('deal_id y content son obligatorios para addNote');
-  }
-
-  const body = { deal_id, content, ...rest };
-  const data = await pipedriveRequest('/notes', {
-    method: 'POST',
-    body
-  });
-  return data.data || null;
-}
-
-async function listActivities(params = {}) {
-  const {
-    deal_id,
-    user_id,
-    limit = 100,
-    start = 0
-  } = params;
-
-  const url = new URL('/activities', BASE_URL);
-  if (deal_id) url.searchParams.set('deal_id', String(deal_id));
-  if (user_id) url.searchParams.set('user_id', String(user_id));
-  url.searchParams.set('limit', String(limit));
-  url.searchParams.set('start', String(start));
-  url.searchParams.set('api_token', API_TOKEN);
-
-  const res = await fetch(url.toString());
-  const data = await res.json().catch(() => ({}));
-
-  if (!res.ok || data.success === false) {
-    const msg = data.error || data.message || `Error Pipedrive ${res.status}`;
-    throw new Error(msg);
-  }
-
-  return {
-    items: data.data || [],
-    pagination: data.additional_data?.pagination || null
-  };
-}
-
-// Conteos deterministas usando total_items por status
-async function analyzePipeline() {
-  const statuses = ['open', 'won', 'lost'];
-  const totals = {
-    open: 0,
-    won: 0,
-    lost: 0,
-    all: 0
-  };
-
-  for (const status of statuses) {
-    const url = new URL('/deals', BASE_URL);
-    url.searchParams.set('status', status);
-    url.searchParams.set('limit', '1');
-    url.searchParams.set('start', '0');
-    url.searchParams.set('api_token', API_TOKEN);
-
-    const res = await fetch(url.toString());
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok || data.success === false) {
-      const msg = data.error || data.message || `Error Pipedrive ${res.status}`;
-      throw new Error(msg);
-    }
-
-    const totalItems = data.additional_data?.pagination?.total_items ?? 0;
-    totals[status] = totalItems;
-  }
-
-  totals.all = totals.open + totals.won + totals.lost;
-
-  return {
-    totals,
-    meta: {
-      source: 'pipedrive.deals (pagination.total_items)',
-      deterministic: true
+    ok: true,
+    intent,
+    datos,
+    red_flags,
+    alertas,
+    metadata: {
+      fuente: 'pipedrive',
+      generado_en: nowISO(),
+      ...extraMeta
     }
   };
 }
 
-// --- Router principal ---
+function buildError(intent, error) {
+  return {
+    ok: false,
+    intent: intent || null,
+    codigo: 'ERROR_BACKEND_CRM',
+    mensaje_usuario: 'Ocurrió un error en el backend CRM. Intenta de nuevo o contacta soporte.',
+    detalle_tecnico: error?.message || String(error),
+    metadata: {
+      fuente: 'pipedrive',
+      generado_en: nowISO()
+    }
+  };
+}
 
-async function dispatchAction(action, params) {
-  switch (action) {
-    case 'listDeals':
-      return await listDeals(params);
-    case 'getDeal':
-      return await getDeal(params);
-    case 'createDeal':
-      return await createDeal(params);
-    case 'updateDeal':
-      return await updateDeal(params);
-    case 'moveDeal':
-      return await moveDeal(params);
-    case 'addNote':
-      return await addNote(params);
-    case 'listActivities':
-      return await listActivities(params);
-    case 'analyzePipeline':
-      return await analyzePipeline();
-    default:
-      throw new Error(`Acción no soportada: ${action}`);
+async function fetchAllDeals(params = {}) {
+  const status = params.status || 'all_not_deleted';
+  const pageSize = params.pageSize || 500;
+
+  let start = 0;
+  let items = [];
+  let more = true;
+
+  while (more) {
+    const page = await dispatchAction('listDeals', {
+      status,
+      limit: pageSize,
+      start
+    });
+
+    const pageItems = page.items || [];
+    items = items.concat(pageItems);
+
+    const pagination = page.pagination || {};
+    if (pagination.more_items_in_collection) {
+      start = pagination.next_start ?? (start + pageSize);
+    } else {
+      more = false;
+    }
   }
+
+  return items;
 }
 
 export default async function handler(req, res) {
@@ -219,31 +69,149 @@ export default async function handler(req, res) {
     res.setHeader('Allow', 'POST');
     return res
       .status(405)
-      .json({ status: 'error', message: 'Método no permitido. Usa POST.' });
+      .json(buildError(null, new Error('Método no permitido. Usa POST.')));
+  }
+
+  const body = req.body || {};
+  const intent = body.intent;
+  const contexto_usuario = body.contexto_usuario || {};
+  const parametros = body.parametros || {};
+
+  if (!intent) {
+    return res
+      .status(400)
+      .json(buildError(null, new Error('Falta "intent" en el body')));
   }
 
   try {
-    const { action, params } = req.body || {};
+    switch (intent) {
+      case 'conteo_simple': {
+        const pipeline = await dispatchAction('analyzePipeline');
+        const datos = {
+          totals: pipeline.totals,
+          meta: pipeline.meta
+        };
+        return res.status(200).json(buildOk(intent, datos));
+      }
 
-    if (!action) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Falta parámetro "action" en el body'
-      });
+      case 'lista_datos': {
+        const status = parametros.status || 'open';
+        const limit = parametros.limit || 50;
+        const start = parametros.start || 0;
+
+        const page = await dispatchAction('listDeals', {
+          status,
+          limit,
+          start
+        });
+
+        const datos = {
+          deals: page.items,
+          pagination: page.pagination
+        };
+
+        return res.status(200).json(buildOk(intent, datos));
+      }
+
+      case 'analisis':
+      case 'auditoria_crm_pwc': {
+        const deals = await fetchAllDeals({
+          status: parametros.status || 'all_not_deleted'
+        });
+
+        const datos = {
+          deals,
+          contexto_usuario
+        };
+
+        return res.status(200).json(buildOk(intent, datos));
+      }
+
+      case 'riesgo': {
+        const deals = await fetchAllDeals({
+          status: parametros.status || 'open'
+        });
+
+        const datos = {
+          deals,
+          contexto_usuario
+        };
+
+        return res.status(200).json(buildOk(intent, datos));
+      }
+
+      case 'productividad': {
+        const limit = parametros.limit || 100;
+        const start = parametros.start || 0;
+        const user_id = parametros.user_id || undefined;
+
+        const activities = await dispatchAction('listActivities', {
+          user_id,
+          limit,
+          start
+        });
+
+        const datos = {
+          activities: activities.items,
+          pagination: activities.pagination,
+          contexto_usuario
+        };
+
+        return res.status(200).json(buildOk(intent, datos));
+      }
+
+      case 'dashboard': {
+        const pipeline = await dispatchAction('analyzePipeline');
+        const datos = {
+          totals: pipeline.totals,
+          meta: pipeline.meta
+        };
+
+        return res.status(200).json(buildOk(intent, datos));
+      }
+
+      case 'modificacion': {
+        const tipo = parametros.tipo;
+        if (!tipo) {
+          throw new Error('Falta "tipo" en parametros para modificacion');
+        }
+
+        let action;
+        switch (tipo) {
+          case 'create_deal':
+            action = 'createDeal';
+            break;
+          case 'update_deal':
+            action = 'updateDeal';
+            break;
+          case 'move_deal':
+            action = 'moveDeal';
+            break;
+          case 'add_note':
+            action = 'addNote';
+            break;
+          default:
+            throw new Error(`Tipo de modificacion no soportado: ${tipo}`);
+        }
+
+        const data = await dispatchAction(action, {
+          ...parametros,
+          confirmado: parametros.confirmado === true
+        });
+
+        const datos = {
+          resultado: data
+        };
+
+        return res.status(200).json(buildOk(intent, datos));
+      }
+
+      default:
+        throw new Error(`Intent no soportado en backend CRM: ${intent}`);
     }
-
-    const data = await dispatchAction(action, params || {});
-
-    return res.status(200).json({
-      status: 'success',
-      action,
-      data
-    });
   } catch (error) {
-    console.error('Error en api/pipedrive:', error);
-    return res.status(500).json({
-      status: 'error',
-      message: error.message || 'Error interno en api/pipedrive'
-    });
+    console.error('Error en api/crm-backend:', error);
+    const statusCode = 500;
+    return res.status(statusCode).json(buildError(intent, error));
   }
 }
