@@ -1,6 +1,6 @@
 // api/crm-backend.js
 
-import { dispatchAction } from './pipedrive';
+import { dispatchAction } from './lib/pipedrive';
 
 function nowISO() {
   return new Date().toISOString();
