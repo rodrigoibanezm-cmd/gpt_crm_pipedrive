@@ -216,30 +216,32 @@ module.exports = async (req, res) => {
         const counts = { open: 0, won: 0, lost: 0 };
 
         for (const st of statuses) {
-          const r = await pipedriveRequest("GET", "/deals", {
-            query: { status: st, limit: 1, start: 0 },
+          const r = await pipedriveRequest("GET", "/deals/summary", {
+            query: { status: st }
           });
 
           if (r.status === "error") {
             return res.status(500).json({ status: "error", message: r.message });
           }
 
-          counts[st] =
-            r.data?.additional_data?.pagination?.total_items ||
-            r.data?.additional_data?.pagination?.total_items === 0
-              ? r.data.additional_data.pagination.total_items
-              : r.data?.length || 0;
+          const total = r.data && typeof r.data.total_count === "number"
+            ? r.data.total_count
+            : 0;
+
+          counts[st] = total;
         }
+
         return res.status(200).json({
           status: "success",
           message: "OK",
           data: {
             total_abiertos: counts.open,
             total_ganados: counts.won,
-            total_perdidos: counts.lost,
-          },
+            total_perdidos: counts.lost
+          }
         });
       }
+
 
       default:
         return res.status(400).json({ status: "error", message: `Accion desconocida: ${action}` });
