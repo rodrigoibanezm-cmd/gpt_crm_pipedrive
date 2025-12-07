@@ -1,254 +1,252 @@
-// api/crm-backend.js
+const { pipedriveRequest } = require("../lib/pipedriveClient");
 
-import { dispatchAction } from './lib/pipedriveClient';
-
-function nowISO() {
-  return new Date().toISOString();
+async function getStageMap() {
+  try {
+    const r = await pipedriveRequest("GET", "/stages", {});
+    const stages = r.data || [];
+    const stageMap = {};
+    for (const s of stages) {
+      stageMap[s.id] = {
+        name: s.name,
+        pipeline_name: s.pipeline_name || "(Sin nombre)",
+      };
+    }
+    return stageMap;
+  } catch (err) {
+    console.error("Error obteniendo stages:", err.message);
+    return {};
+  }
 }
 
-function buildOk(intent, datos, red_flags = [], alertas = [], extraMeta = {}) {
-  return {
-    ok: true,
-    intent,
-    datos,
-    red_flags,
-    alertas,
-    metadata: {
-      fuente: 'pipedrive',
-      generado_en: nowISO(),
-      ...extraMeta
-    }
-  };
-}
-
-function buildError(intent, error, codigo = 'ERROR_BACKEND_CRM') {
-  return {
-    ok: false,
-    intent: intent || null,
-    codigo,
-    mensaje_usuario: 'Ocurrió un error en el backend CRM. Intenta de nuevo o contacta soporte.',
-    detalle_tecnico: error?.message || String(error),
-    metadata: {
-      fuente: 'pipedrive',
-      generado_en: nowISO()
-    }
-  };
-}
-
-async function fetchAllDeals(params = {}) {
-  const status = params.status || 'all_not_deleted';
-  const pageSize = params.pageSize || 500;
-  const account_id = params.account_id || null;
-
-  let start = 0;
-  let items = [];
-  let more = true;
-
-  while (more) {
-    const page = await dispatchAction('listDeals', {
-      status,
-      limit: pageSize,
-      start,
-      account_id
-    });
-
-    const pageItems = page.items || [];
-    items = items.concat(pageItems);
-
-    const pagination = page.pagination || {};
-    if (pagination.more_items_in_collection) {
-      start = pagination.next_start ?? (start + pageSize);
-    } else {
-      more = false;
-    }
+module.exports = async (req, res) => {
+  if (req.method !== "POST") {
+    return res.status(405).json({ status: "error", message: "Method not allowed" });
   }
 
-  return items;
-}
-
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res
-      .status(405)
-      .json(buildError(null, new Error('Método no permitido. Usa POST.'), 'ERR_CRM_METHOD_NOT_ALLOWED'));
-  }
-
-  const body = req.body || {};
-  const intent = body.intent;
-  const contexto_usuario = body.contexto_usuario || {};
-  const parametros = body.parametros || {};
-
-  if (!intent) {
-    return res
-      .status(400)
-      .json(buildError(null, new Error('Falta "intent" en el body'), 'ERR_CRM_INTENT_FALTANTE'));
-  }
-
-  const account_id =
-    contexto_usuario.account_id ||
-    contexto_usuario.tenant_id ||
-    contexto_usuario.user_id ||
-    null;
+  const {
+    action,
+    dealId,
+    stageId,
+    activityData,
+    noteText,
+    limit,
+    status,
+    term,
+    dealData,
+    pipeline_id,
+  } = req.body || {};
+  let fields = req.body?.fields || ["id", "title"];
 
   try {
-    switch (intent) {
-      case 'conteo_simple': {
-        const pipeline = await dispatchAction('analyzePipeline', { account_id });
-        const datos = {
-          totals: pipeline.totals,
-          meta: pipeline.meta,
-          account_id
-        };
-        return res.status(200).json(buildOk(intent, datos));
-      }
+    switch (action) {
+      case "listDeals": {
+        const limitVal = limit || 50;
+        const statusVal = status || "open";
 
-      case 'lista_datos': {
-        const status = parametros.status || 'open';
-        const limit = parametros.limit || 50;
-        const start = parametros.start || 0;
-
-        const page = await dispatchAction('listDeals', {
-          status,
-          limit,
-          start,
-          account_id
-        });
-
-        const datos = {
-          deals: page.items,
-          pagination: page.pagination,
-          account_id
-        };
-
-        return res.status(200).json(buildOk(intent, datos));
-      }
-
-      case 'analisis':
-      case 'auditoria_crm_pwc': {
-        const deals = await fetchAllDeals({
-          status: parametros.status || 'all_not_deleted',
-          account_id
-        });
-
-        const datos = {
-          deals,
-          contexto_usuario,
-          account_id
-        };
-
-        return res.status(200).json(buildOk(intent, datos));
-      }
-
-      case 'riesgo': {
-        const deals = await fetchAllDeals({
-          status: parametros.status || 'open',
-          account_id
-        });
-
-        const datos = {
-          deals,
-          contexto_usuario,
-          account_id
-        };
-
-        return res.status(200).json(buildOk(intent, datos));
-      }
-
-      case 'productividad': {
-        const limit = parametros.limit || 100;
-        const start = parametros.start || 0;
-        const user_id = parametros.user_id || account_id || undefined;
-
-        const activities = await dispatchAction('listActivities', {
-          user_id,
-          limit,
-          start,
-          account_id
-        });
-
-        const datos = {
-          activities: activities.items,
-          pagination: activities.pagination,
-          contexto_usuario,
-          account_id,
-          user_id
-        };
-
-        return res.status(200).json(buildOk(intent, datos));
-      }
-
-      case 'dashboard': {
-        const pipeline = await dispatchAction('analyzePipeline', { account_id });
-        const datos = {
-          totals: pipeline.totals,
-          meta: pipeline.meta,
-          account_id
-        };
-
-        return res.status(200).json(buildOk(intent, datos));
-      }
-
-      case 'modificacion': {
-        const tipo = parametros.tipo;
-        if (!tipo) {
-          throw new Error('Falta "tipo" en parametros para modificacion');
+        const query = { status: statusVal, limit: limitVal };
+        if (pipeline_id) {
+          query.pipeline_id = pipeline_id;
         }
 
-        if (parametros.confirmado !== true) {
-          throw new Error('Acción de modificación requiere confirmado=true');
+        const r = await pipedriveRequest("GET", "/deals", { query });
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
         }
 
-        let action;
-        switch (tipo) {
-          case 'create_deal':
-            action = 'createDeal';
-            break;
-          case 'update_deal':
-            action = 'updateDeal';
-            break;
-          case 'move_deal':
-            action = 'moveDeal';
-            break;
-          case 'add_note':
-            action = 'addNote';
-            break;
-          default:
-            throw new Error(`Tipo de modificacion no soportado: ${tipo}`);
-        }
+        const stageMap = await getStageMap();
 
-        const data = await dispatchAction(action, {
-          ...parametros,
-          account_id,
-          confirmado: true
+        const slimDeals = (r.data || []).map((deal) => {
+          const clean = {};
+          for (const k of fields) clean[k] = deal[k] ?? null;
+          if ("stage_id" in clean) {
+            clean["stage_name"] = stageMap[clean.stage_id]?.name || "—";
+            clean["pipeline_name"] = stageMap[clean.stage_id]?.pipeline_name || null;
+          }
+          return clean;
         });
 
-        const datos = {
-          resultado: data,
-          account_id
-        };
+        return res.status(200).json({ status: "success", data: slimDeals });
+      }
 
-        return res.status(200).json(buildOk(intent, datos));
+      case "listPipelines": {
+        const r = await pipedriveRequest("GET", "/pipelines", {});
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        const pipelines = (r.data || []).map((p) => ({
+          id: p.id,
+          name: p.name,
+          url_title: p.url_title,
+          active: p.active,
+          order_nr: p.order_nr,
+        }));
+
+        return res.status(200).json({ status: "success", data: pipelines });
+      }
+
+      case "searchDeals": {
+        const termVal = term || "";
+        if (!termVal) {
+          return res.status(400).json({ status: "error", message: "term es obligatorio para searchDeals" });
+        }
+
+        const r = await pipedriveRequest("GET", "/deals/search", {
+          query: { term: termVal, limit: limit || 20 },
+        });
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        const results = (r.data?.items || []).map((item) => ({
+          id: item.item?.id,
+          title: item.item?.title,
+          value: item.item?.value,
+          status: item.item?.status,
+        }));
+
+        return res.status(200).json({ status: "success", data: results });
+      }
+
+      case "getDeal": {
+        if (!dealId) {
+          return res.status(400).json({ status: "error", message: "dealId es obligatorio para getDeal" });
+        }
+
+        const r = await pipedriveRequest("GET", `/deals/${dealId}`, {});
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        return res.status(200).json({ status: "success", data: r.data });
+      }
+
+      case "createDeal": {
+        if (!dealData || typeof dealData !== "object") {
+          return res
+            .status(400)
+            .json({ status: "error", message: "dealData (objeto) es obligatorio para createDeal" });
+        }
+
+        const r = await pipedriveRequest("POST", "/deals", { body: dealData });
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        return res.status(200).json({ status: "success", data: r.data });
+      }
+
+      case "updateDeal": {
+        if (!dealId) {
+          return res.status(400).json({ status: "error", message: "dealId es obligatorio para updateDeal" });
+        }
+        if (!dealData || typeof dealData !== "object") {
+          return res
+            .status(400)
+            .json({ status: "error", message: "dealData (objeto) es obligatorio para updateDeal" });
+        }
+
+        const r = await pipedriveRequest("PUT", `/deals/${dealId}`, { body: dealData });
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        return res.status(200).json({ status: "success", data: r.data });
+      }
+
+      case "moveDeal": {
+        if (!dealId || !stageId) {
+          return res
+            .status(400)
+            .json({ status: "error", message: "dealId y stageId son obligatorios para moveDeal" });
+        }
+
+        const r = await pipedriveRequest("PUT", `/deals/${dealId}`, {
+          body: { stage_id: stageId },
+        });
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        return res.status(200).json({ status: "success", data: r.data });
+      }
+
+      case "createActivity": {
+        if (!activityData || typeof activityData !== "object") {
+          return res
+            .status(400)
+            .json({ status: "error", message: "activityData (objeto) es obligatorio para createActivity" });
+        }
+
+        const r = await pipedriveRequest("POST", "/activities", { body: activityData });
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        return res.status(200).json({ status: "success", data: r.data });
+      }
+
+      case "addNote": {
+        if (!dealId || !noteText) {
+          return res
+            .status(400)
+            .json({ status: "error", message: "dealId y noteText son obligatorios para addNote" });
+        }
+
+        const r = await pipedriveRequest("POST", "/notes", {
+          body: { deal_id: dealId, content: noteText },
+        });
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        return res.status(200).json({ status: "success", data: r.data });
+      }
+
+      case "analyzePipeline": {
+        const statuses = ["open", "won", "lost"];
+        const counts = { open: 0, won: 0, lost: 0 };
+
+        for (const st of statuses) {
+          const r = await pipedriveRequest("GET", "/deals", {
+            query: { status: st, limit: 1, start: 0 },
+          });
+
+          if (r.status === "error") {
+            return res.status(500).json({ status: "error", message: r.message });
+          }
+
+          counts[st] =
+            r.data?.additional_data?.pagination?.total_items ||
+            r.data?.additional_data?.pagination?.total_items === 0
+              ? r.data.additional_data.pagination.total_items
+              : r.data?.length || 0;
+        }
+        return res.status(200).json({
+          status: "success",
+          message: "OK",
+          data: {
+            total_abiertos: counts.open,
+            total_ganados: counts.won,
+            total_perdidos: counts.lost,
+          },
+        });
       }
 
       default:
-        throw new Error(`Intent no soportado en backend CRM: ${intent}`);
+        return res.status(400).json({ status: "error", message: `Accion desconocida: ${action}` });
     }
-  } catch (error) {
-    console.error('Error en api/crm-backend:', error);
-
-    const msg = String(error?.message || error || '');
-    let codigo = 'ERROR_BACKEND_CRM';
-
-    if (msg.toLowerCase().includes('timeout')) {
-      codigo = 'ERR_CRM_TIMEOUT';
-    } else if (msg.toLowerCase().includes('no está configurado') || msg.toLowerCase().includes('no esta configurado')) {
-      codigo = 'ERR_CRM_CONFIG';
-    } else if (msg.toLowerCase().includes('no permitido') || msg.toLowerCase().includes('not allowed')) {
-      codigo = 'ERR_CRM_METHOD_NOT_ALLOWED';
-    }
-
-    const statusCode = 500;
-    return res.status(statusCode).json(buildError(intent, error, codigo));
+  } catch (err) {
+    return res
+      .status(500)
+      .json({ status: "error", message: err.message || "Error interno pipedrive.js" });
   }
-}
+};
