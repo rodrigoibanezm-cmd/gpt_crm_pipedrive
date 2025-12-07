@@ -89,11 +89,18 @@ module.exports = async (req, res) => {
       case "searchDeals": {
         const termVal = term || "";
         if (!termVal) {
-          return res.status(400).json({ status: "error", message: "term es obligatorio para searchDeals" });
+          return res.status(400).json({
+            status: "error",
+            message: "term es obligatorio para searchDeals",
+          });
         }
 
         const r = await pipedriveRequest("GET", "/deals/search", {
-          query: { term: termVal, limit: limit || 20 },
+          query: {
+            term: termVal,
+            limit: limit || 50,
+            fields: "title",
+          },
         });
 
         if (r.status === "error") {
@@ -104,6 +111,7 @@ module.exports = async (req, res) => {
           id: item.item?.id,
           title: item.item?.title,
           value: item.item?.value,
+          currency: item.item?.currency,
           status: item.item?.status,
         }));
 
@@ -159,6 +167,20 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: "success", data: r.data });
       }
 
+      case "deleteDeal": {
+        if (!dealId) {
+          return res.status(400).json({ status: "error", message: "dealId es obligatorio para deleteDeal" });
+        }
+
+        const r = await pipedriveRequest("DELETE", `/deals/${dealId}`, {});
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        return res.status(200).json({ status: "success", data: r.data });
+      }
+
       case "moveDeal": {
         if (!dealId || !stageId) {
           return res
@@ -193,6 +215,42 @@ module.exports = async (req, res) => {
         return res.status(200).json({ status: "success", data: r.data });
       }
 
+      case "updateActivity": {
+        if (!activityData || typeof activityData !== "object" || !activityData.id) {
+          return res.status(400).json({
+            status: "error",
+            message: "activityData con id es obligatorio para updateActivity",
+          });
+        }
+
+        const { id, ...patch } = activityData;
+
+        const r = await pipedriveRequest("PUT", `/activities/${id}`, { body: patch });
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        return res.status(200).json({ status: "success", data: r.data });
+      }
+
+      case "deleteActivity": {
+        if (!activityData || typeof activityData !== "object" || !activityData.id) {
+          return res.status(400).json({
+            status: "error",
+            message: "activityData con id es obligatorio para deleteActivity",
+          });
+        }
+
+        const r = await pipedriveRequest("DELETE", `/activities/${activityData.id}`, {});
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        return res.status(200).json({ status: "success", data: r.data });
+      }
+
       case "addNote": {
         if (!dealId || !noteText) {
           return res
@@ -200,9 +258,30 @@ module.exports = async (req, res) => {
             .json({ status: "error", message: "dealId y noteText son obligatorios para addNote" });
         }
 
-        const r = await pipedriveRequest("POST", "/notes", {
-          body: { deal_id: dealId, content: noteText },
-        });
+        const body = {
+          content: noteText,
+          deal_id: dealId,
+        };
+
+        const r = await pipedriveRequest("POST", "/notes", { body });
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        return res.status(200).json({ status: "success", data: r.data });
+      }
+
+      case "listActivities": {
+        const query = {};
+        if (dealId) {
+          query.deal_id = dealId;
+        }
+        if (status) {
+          query.done = status;
+        }
+
+        const r = await pipedriveRequest("GET", "/activities", { query });
 
         if (r.status === "error") {
           return res.status(500).json({ status: "error", message: r.message });
@@ -212,23 +291,23 @@ module.exports = async (req, res) => {
       }
 
       case "analyzePipeline": {
-        const statuses = ["open", "won", "lost"];
+        const query = { status: "all", limit: 9999 };
+
+        const r = await pipedriveRequest("GET", "/deals", { query });
+
+        if (r.status === "error") {
+          return res.status(500).json({ status: "error", message: r.message });
+        }
+
+        const deals = Array.isArray(r.data) ? r.data : [];
+
         const counts = { open: 0, won: 0, lost: 0 };
 
-        for (const st of statuses) {
-          const r = await pipedriveRequest("GET", "/deals/summary", {
-            query: { status: st }
-          });
-
-          if (r.status === "error") {
-            return res.status(500).json({ status: "error", message: r.message });
-          }
-
-          const total = r.data && typeof r.data.total_count === "number"
-            ? r.data.total_count
-            : 0;
-
-          counts[st] = total;
+        for (const deal of deals) {
+          const st = deal.status;
+          if (st === "open") counts.open += 1;
+          else if (st === "won") counts.won += 1;
+          else if (st === "lost") counts.lost += 1;
         }
 
         return res.status(200).json({
@@ -237,11 +316,10 @@ module.exports = async (req, res) => {
           data: {
             total_abiertos: counts.open,
             total_ganados: counts.won,
-            total_perdidos: counts.lost
-          }
+            total_perdidos: counts.lost,
+          },
         });
       }
-
 
       default:
         return res.status(400).json({ status: "error", message: `Accion desconocida: ${action}` });
