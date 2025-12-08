@@ -40,7 +40,7 @@ module.exports = async (req, res) => {
   try {
     switch (action) {
       case "listDeals": {
-        const limitVal = limit || 50;
+        const limitVal = typeof limit === "number" ? limit : 20000;
         const statusVal = status || "open";
 
         const query = { status: statusVal, limit: limitVal };
